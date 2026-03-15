@@ -48,7 +48,7 @@ function getClientIP(req) {
 }
 
 function broadcastSystemMessage(type, data) {
-  const msg = JSON.stringify({ type, data, timestamp: new Date().toLocaleString() });
+  const msg = JSON.stringify({ type, data, timestamp: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) });
   onlineUsers.forEach(u => {
     if (u.ws.readyState === WebSocket.OPEN) u.ws.send(msg);
   });

@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 // Render 后端的域名（部署后替换）
-const RENDER_URL = 'https://your-chat-backend.onrender.com';
+const RENDER_URL = 'https://lmx-w9ua.onrender.com';
 
 // 每14分钟请求一次（Render 免费版15分钟无请求休眠）
 const keepAlive = async () => {

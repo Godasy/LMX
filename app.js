@@ -4,17 +4,15 @@ const WebSocket = require('ws');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const path = require('path');
-const multer = require('multer');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '20mb' }));
 app.use(express.static('public'));
 
 let onlineUsers = [];
 let mutedIPs = [];
 const ADMIN_PASSWORD = 'Lmx%%112233';
-let privateChatMap = new Map();
 
 const dbPath = path.join(__dirname, 'chat.db');
 const db = new sqlite3.Database(dbPath, (err) => {
@@ -47,21 +45,6 @@ const db = new sqlite3.Database(dbPath, (err) => {
   }
 });
 
-// 图片上传配置
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = path.join(__dirname, 'public/uploads');
-    require('fs').mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    const filename = Date.now() + '_' + Math.random().toString(36).substr(2, 6) + ext;
-    cb(null, filename);
-  }
-});
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
-
 function getClientIP(req) {
   return req.headers['x-forwarded-for']?.split(',')[0] ||
     req.connection.remoteAddress ||
@@ -83,41 +66,6 @@ function updateOnlineCount() {
 function findUserByIP(ip) {
   return onlineUsers.find(u => u.ip === ip);
 }
-
-// 上传图片接口
-app.post('/api/upload/image', upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ success: false, message: '未上传图片' });
-  const url = `/uploads/${req.file.filename}`;
-  res.json({ success: true, url });
-});
-
-app.post('/api/admin/delete-message', (req, res) => {
-  const { messageId } = req.body;
-  if (!messageId || isNaN(Number(messageId))) return res.status(400).json({ success: false });
-  db.run('DELETE FROM messages WHERE id = ?', [Number(messageId)], function (err) {
-    if (err) return res.status(500).json({ success: false });
-    broadcastSystemMessage('messageDeleted', { id: messageId });
-    res.json({ success: true });
-  });
-});
-
-app.post('/api/admin/clear-messages', (req, res) => {
-  db.run('DELETE FROM messages WHERE isNotice=0 AND isPrivate=0', function (err) {
-    if (err) return res.status(500).json({ success: false });
-    broadcastSystemMessage('messagesCleared', {});
-    res.json({ success: true });
-  });
-});
-
-app.post('/api/admin/delete-notice', (req, res) => {
-  const { noticeId } = req.body;
-  if (!noticeId || isNaN(Number(noticeId))) return res.status(400).json({ success: false });
-  db.run('DELETE FROM messages WHERE id=? AND isNotice=1', [Number(noticeId)], function (err) {
-    if (err) return res.status(500).json({ success: false });
-    broadcastSystemMessage('noticeDeleted', { id: noticeId });
-    res.json({ success: true });
-  });
-});
 
 app.get('/api/messages', (req, res) => {
   db.all('SELECT * FROM messages ORDER BY timestamp ASC', (err, rows) => {
@@ -165,8 +113,32 @@ app.post('/api/admin/notice', (req, res) => {
     });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'alive', mutedIPs });
+app.post('/api/admin/delete-message', (req, res) => {
+  const { messageId } = req.body;
+  if (!messageId || isNaN(Number(messageId))) return res.status(400).json({ success: false });
+  db.run('DELETE FROM messages WHERE id = ?', [Number(messageId)], function (err) {
+    if (err) return res.status(500).json({ success: false });
+    broadcastSystemMessage('messageDeleted', { id: messageId });
+    res.json({ success: true });
+  });
+});
+
+app.post('/api/admin/clear-messages', (req, res) => {
+  db.run('DELETE FROM messages WHERE isNotice=0 AND isPrivate=0', function (err) {
+    if (err) return res.status(500).json({ success: false });
+    broadcastSystemMessage('messagesCleared', {});
+    res.json({ success: true });
+  });
+});
+
+app.post('/api/admin/delete-notice', (req, res) => {
+  const { noticeId } = req.body;
+  if (!noticeId || isNaN(Number(noticeId))) return res.status(400).json({ success: false });
+  db.run('DELETE FROM messages WHERE id=? AND isNotice=1', [Number(noticeId)], function (err) {
+    if (err) return res.status(500).json({ success: false });
+    broadcastSystemMessage('noticeDeleted', { id: noticeId });
+    res.json({ success: true });
+  });
 });
 
 const server = http.createServer(app);
@@ -199,7 +171,7 @@ wss.on('connection', (ws, req) => {
           [username, content, isAdmin ? 1 : 0, targetIP, ip, isImage ? 1 : 0]);
         const pmsg = JSON.stringify({
           type: 'privateChat',
-          data: { from: { username, ip }, to: { ip: targetIP }, content, isImage, timestamp: new Date().toLocaleString() }
+          data: { from: { username, ip }, to: { ip: targetIP }, content, isImage }
         });
         ws.send(pmsg);
         tu.ws.send(pmsg);
@@ -211,7 +183,7 @@ wss.on('connection', (ws, req) => {
 
       const msg = JSON.stringify({
         type: 'chat',
-        data: { username, content, isAdmin, isImage, timestamp: new Date().toLocaleString() }
+        data: { username, content, isAdmin, isImage }
       });
       onlineUsers.forEach(u => u.ws.readyState === WebSocket.OPEN && u.ws.send(msg));
     } catch (e) { }

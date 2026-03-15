@@ -7,7 +7,7 @@
     "ws": "^8.16.0",
     "sqlite3": "^5.1.7",
     "cors": "^2.8.5",
-    "multer": "^1.4.5-lts.1"  // 新增multer依赖
+    "multer": "^1.4.5-lts.1"
   },
   "scripts": {
     "start": "node app.js"

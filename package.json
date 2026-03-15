@@ -1,17 +1,15 @@
 {
-  "name": "chat-backend",
+  "name": "chat-server",
   "version": "1.0.0",
   "main": "app.js",
-  "scripts": {
-    "start": "node app.js",
-    "keep-alive": "node keep_alive.js"
-  },
   "dependencies": {
-    "@supabase/supabase-js": "^2.99.1",
-    "axios": "^1.6.2",
-    "cors": "^2.8.6",
-    "express": "^4.22.1",
-    "sqlite3": "^5.1.6",
-    "ws": "^8.19.0"
+    "express": "^4.18.2",
+    "ws": "^8.16.0",
+    "sqlite3": "^5.1.7",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1"  // 新增multer依赖
+  },
+  "scripts": {
+    "start": "node app.js"
   }
 }

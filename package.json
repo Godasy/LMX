@@ -1,18 +1,11 @@
 {
   "name": "chat-backend",
   "version": "1.0.0",
-  "main": "app.js",
   "dependencies": {
-    "cors": "^2.8.5",
     "express": "^4.18.2",
-    "express-session": "^1.17.3",
     "sqlite3": "^5.1.6",
-    "moment": "^2.29.4",
-    "moment-timezone": "^0.5.45",
-    "ws": "^8.14.2",
-    "uuid": "^9.0.1"
-  },
-  "scripts": {
-    "start": "node app.js"
+    "ws": "^8.14.2", 
+    "jsonwebtoken": "^9.0.2", 
+    "bcryptjs": "^2.4.3"
   }
 }

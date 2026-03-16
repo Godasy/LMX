@@ -3,11 +3,12 @@ const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const session = require('express-session');
 const moment = require('moment');
+require('moment-timezone'); // 引入时区模块
 const WebSocket = require('ws');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
 
-// 配置时区为北京时间
+// 配置时区为北京时间（修复核心问题）
 moment.tz.setDefault('Asia/Shanghai');
 
 const app = express();

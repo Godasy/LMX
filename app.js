@@ -98,6 +98,24 @@ function loadChatRoomsFromDB() {
   });
 }
 
+// 工具函数：广播消息给所有在线用户
+function broadcastToAll(message) {
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(message));
+    }
+  });
+}
+
+// 工具函数：获取客户端IP
+function getClientIP(req) {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0] || 
+             req.connection.remoteAddress || 
+             req.socket.remoteAddress || 
+             req.connection.socket.remoteAddress || '';
+  return ip.replace(/::ffff:/, ''); // 处理IPv6兼容格式
+}
+
 // ===================== API接口 =====================
 
 // 1. 获取聊天室列表
@@ -245,7 +263,7 @@ app.post('/api/admin/red-message', (req, res) => {
   
   const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
   
-  // 保存到数据库
+  // 保存到数据库（如果指定了聊天室）
   if (roomId) {
     db.run('INSERT INTO messages (room_id, username, content, is_admin, is_red, timestamp) VALUES (?, ?, ?, 1, 1, ?)',
       [roomId, '管理员', content, timestamp]);
@@ -367,3 +385,89 @@ wss.on('connection', (ws, req) => {
           const applyMsg = {
             type: 'friendApply',
             data: {
+              fromId: msg.fromId,
+              fromName: msg.fromName,
+              fromIp: msg.fromIp,
+              toId: msg.toId,
+              time: new Date().getTime()
+            }
+          };
+          
+          // 保存到数据库
+          db.run('INSERT INTO friend_applies (from_id, from_name, to_id) VALUES (?, ?, ?)',
+            [msg.fromId, msg.fromName, msg.toId]);
+          
+          // 发送给被申请人
+          const toUser = onlineUsers.find(u => u.id === msg.toId);
+          if (toUser && toUser.ws.readyState === WebSocket.OPEN) {
+            toUser.ws.send(JSON.stringify(applyMsg));
+          }
+          break;
+          
+        case 'friendAgree':
+          // 同意好友申请
+          const agreeMsg = {
+            type: 'friendAgree',
+            data: {
+              friend: {
+                id: msg.fromId,
+                name: msg.fromName
+              }
+            }
+          };
+          
+          // 更新数据库状态
+          db.run('UPDATE friend_applies SET status = 1 WHERE from_id = ? AND to_id = ?',
+            [msg.toId, msg.fromId]);
+          
+          // 保存好友关系
+          db.run('INSERT OR IGNORE INTO friends (user_id, friend_id) VALUES (?, ?)',
+            [msg.fromId, msg.toId]);
+          db.run('INSERT OR IGNORE INTO friends (user_id, friend_id) VALUES (?, ?)',
+            [msg.toId, msg.fromId]);
+          
+          // 发送给申请人
+          const applyUser = onlineUsers.find(u => u.id === msg.toId);
+          if (applyUser && applyUser.ws.readyState === WebSocket.OPEN) {
+            applyUser.ws.send(JSON.stringify(agreeMsg));
+          }
+          break;
+      }
+    } catch (err) {
+      console.error('处理WebSocket消息失败:', err);
+    }
+  });
+  
+  // 连接关闭
+  ws.on('close', () => {
+    console.log('WebSocket连接关闭');
+    if (userInfo) {
+      onlineUsers = onlineUsers.filter(u => u.id !== userInfo.id);
+    }
+  });
+  
+  // 错误处理
+  ws.onerror = (err) => {
+    console.error('WebSocket错误:', err);
+  };
+});
+
+// ===================== 启动服务器 =====================
+
+// 静态文件托管（前端页面）
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 启动HTTP服务器
+server.listen(PORT, () => {
+  console.log(`服务器运行在端口 ${PORT}`);
+  console.log(`WebSocket地址: ws://localhost:${PORT}`);
+});
+
+// 全局错误捕获
+process.on('uncaughtException', (err) => {
+  console.error('未捕获的异常:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('未处理的Promise拒绝:', promise, '原因:', reason);
+});

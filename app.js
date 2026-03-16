@@ -15,30 +15,49 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = 'Lmx%%112233';
 
-// 修复SQLite路径问题（适配Render部署）
-const dbPath = path.resolve(__dirname, 'chat.db');
-// 确保数据库文件目录存在
-const dbDir = path.dirname(dbPath);
+// 全局状态
+let onlineUsers = []; // 在线用户
+let chatRooms = [ // 默认聊天室
+  { id: 'default', name: '默认聊天室', desc: '所有人可进入的公共聊天室' }
+];
+
+// 确保数据库目录存在（修复SQLite路径错误）
+const dbDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
-// 初始化SQLite数据库（修复部署错误）
+// 初始化数据库（绝对路径+错误处理）
+const dbPath = path.join(dbDir, 'chat.db');
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
-    console.error('SQLite数据库连接失败:', err.message);
-    // 降级到内存数据库，避免部署失败
+    console.error('数据库连接失败:', err.message);
+    // 降级使用内存数据库避免部署失败
     db = new sqlite3.Database(':memory:');
-    console.log('使用内存数据库继续运行');
+    console.log('降级使用内存数据库');
   } else {
-    console.log('SQLite数据库连接成功');
-    // 初始化数据库表（确保表存在）
-    initDatabase();
+    console.log(`成功连接SQLite数据库: ${dbPath}`);
+    
+    // 创建必要的表
+    createTables();
+    
+    // 加载聊天室
+    loadChatRoomsFromDB();
   }
 });
 
-// 初始化数据库表（解决SQLite表不存在错误）
-function initDatabase() {
+// 创建数据库表（增加用户表，支持ID唯一性）
+function createTables() {
+  // 用户表（存储注册用户，确保ID唯一）
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    password TEXT NOT NULL,
+    name TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    status INTEGER DEFAULT 1 -- 1-正常 0-注销
+  )`);
+  
   // 聊天室表
   db.run(`CREATE TABLE IF NOT EXISTS chatrooms (
     id TEXT PRIMARY KEY,
@@ -46,8 +65,8 @@ function initDatabase() {
     desc TEXT,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
-
-  // 消息表
+  
+  // 聊天消息表（按聊天室区分）
   db.run(`CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id TEXT NOT NULL,
@@ -55,75 +74,70 @@ function initDatabase() {
     content TEXT NOT NULL,
     is_admin INTEGER DEFAULT 0,
     is_red INTEGER DEFAULT 0,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (room_id) REFERENCES chatrooms(id)
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
-
-  // 用户表（新增ID唯一性）
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    pwd TEXT NOT NULL,
-    name TEXT NOT NULL,
-    ip TEXT NOT NULL,
-    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-    status TEXT DEFAULT 'active' -- active/inactive
-  )`);
-
+  
   // 好友关系表
   db.run(`CREATE TABLE IF NOT EXISTS friends (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     friend_id TEXT NOT NULL,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, friend_id),
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (friend_id) REFERENCES users(id)
+    UNIQUE(user_id, friend_id)
   )`);
-
+  
   // 好友申请表
   db.run(`CREATE TABLE IF NOT EXISTS friend_applies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_id TEXT NOT NULL,
     from_name TEXT NOT NULL,
     to_id TEXT NOT NULL,
-    status TEXT DEFAULT 'pending', -- pending/accepted/rejected
-    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (from_id) REFERENCES users(id),
-    FOREIGN KEY (to_id) REFERENCES users(id)
+    status INTEGER DEFAULT 0, -- 0-待处理 1-已同意 2-已拒绝
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
-
+  
   // 系统公告表
   db.run(`CREATE TABLE IF NOT EXISTS notices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     content TEXT NOT NULL,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+  
+  // 私聊消息表
+  db.run(`CREATE TABLE IF NOT EXISTS private_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id TEXT NOT NULL,
+    from_name TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+}
 
-  // 插入默认聊天室（如果不存在）
-  db.get(`SELECT id FROM chatrooms WHERE id = ?`, ['default'], (err, row) => {
-    if (err) console.error('查询默认聊天室失败:', err);
-    if (!row) {
-      db.run(`INSERT INTO chatrooms (id, name, desc) VALUES (?, ?, ?)`, [
-        'default',
-        '默认聊天室',
-        '所有人可进入的公共聊天室'
-      ], (err) => {
-        if (err) console.error('插入默认聊天室失败:', err);
-      });
+// 从数据库加载聊天室
+function loadChatRoomsFromDB() {
+  db.all('SELECT * FROM chatrooms', (err, rows) => {
+    if (!err && rows.length > 0) {
+      chatRooms = rows;
+      console.log('加载聊天室:', chatRooms);
+    } else {
+      // 插入默认聊天室
+      db.run('INSERT OR IGNORE INTO chatrooms (id, name, desc) VALUES (?, ?, ?)',
+        ['default', '默认聊天室', '所有人可进入的公共聊天室']);
     }
   });
 }
-
-// 全局状态
-let onlineUsers = []; // 在线用户
-let chatRooms = []; // 聊天室列表
 
 // 工具函数：广播消息给所有在线用户
 function broadcastToAll(message) {
   if (wss && wss.clients) {
     wss.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify(message));
+        try {
+          client.send(JSON.stringify(message));
+        } catch (err) {
+          console.error('广播消息失败:', err);
+        }
       }
     });
   }
@@ -131,124 +145,277 @@ function broadcastToAll(message) {
 
 // 工具函数：获取客户端IP
 function getClientIP(req) {
-  const ip = req.headers['x-forwarded-for']?.split(',')[0] ||
-             req.connection.remoteAddress ||
-             req.socket.remoteAddress ||
+  const ip = req.headers['x-forwarded-for']?.split(',')[0] || 
+             req.connection.remoteAddress || 
+             req.socket.remoteAddress || 
              req.connection.socket.remoteAddress || '';
   return ip.replace(/::ffff:/, ''); // 处理IPv6兼容格式
 }
 
-// 工具函数：校验ID唯一性
-function checkUserIdUnique(userId, callback) {
-  db.get(`SELECT id FROM users WHERE id = ? AND status = ?`, [userId, 'active'], (err, row) => {
-    if (err) {
-      callback(err, false);
-    } else {
-      callback(null, !row); // true=唯一，false=已存在
-    }
-  });
-}
-
 // ===================== API接口 =====================
 
-// 1. 获取聊天室列表
-app.get('/api/chatrooms', (req, res) => {
-  db.all(`SELECT * FROM chatrooms`, (err, rows) => {
+// 1. 检查用户ID是否唯一
+app.post('/api/check-id', (req, res) => {
+  const { userId } = req.body;
+  
+  if (!userId) {
+    return res.json({ success: false, message: '请输入用户ID' });
+  }
+  
+  db.get('SELECT id FROM users WHERE id = ? AND status = 1', [userId], (err, row) => {
     if (err) {
-      console.error('获取聊天室列表失败:', err);
-      return res.json({ success: false, message: '获取失败', rooms: [] });
+      console.error('检查ID失败:', err);
+      return res.json({ success: false, message: '服务器错误' });
     }
-    chatRooms = rows;
-    res.json({ success: true, rooms: rows });
+    
+    res.json({ 
+      success: true, 
+      isUnique: !row // true=ID可用 false=ID已存在
+    });
   });
 });
 
-// 2. 新增聊天室
+// 2. 用户注册（后端验证ID唯一性）
+app.post('/api/register', (req, res) => {
+  const { userId, password, userName } = req.body;
+  
+  // 基础验证
+  if (!userId || !password) {
+    return res.json({ success: false, message: 'ID和密码不能为空' });
+  }
+  
+  if (userId.length < 4) {
+    return res.json({ success: false, message: 'ID长度不能少于4位' });
+  }
+  
+  if (password.length < 6) {
+    return res.json({ success: false, message: '密码长度不能少于6位' });
+  }
+  
+  // 检查ID是否已存在
+  db.get('SELECT id FROM users WHERE id = ? AND status = 1', [userId], (err, row) => {
+    if (err) {
+      console.error('注册失败:', err);
+      return res.json({ success: false, message: '服务器错误' });
+    }
+    
+    if (row) {
+      return res.json({ success: false, message: '该ID已被占用，请更换' });
+    }
+    
+    // 获取客户端IP
+    const clientIP = getClientIP(req);
+    
+    // 注册用户
+    const userNameFinal = userName || ('用户' + Math.floor(Math.random() * 1000));
+    db.run('INSERT INTO users (id, password, name, ip) VALUES (?, ?, ?, ?)',
+      [userId, password, userNameFinal, clientIP], (err) => {
+        if (err) {
+          console.error('注册用户失败:', err);
+          return res.json({ success: false, message: '注册失败' });
+        }
+        
+        res.json({ 
+          success: true, 
+          message: '注册成功',
+          user: { id: userId, name: userNameFinal }
+        });
+      });
+  });
+});
+
+// 3. 用户登录
+app.post('/api/login', (req, res) => {
+  const { userId, password } = req.body;
+  
+  if (!userId || !password) {
+    return res.json({ success: false, message: 'ID和密码不能为空' });
+  }
+  
+  db.get('SELECT * FROM users WHERE id = ? AND status = 1', [userId], (err, row) => {
+    if (err) {
+      console.error('登录失败:', err);
+      return res.json({ success: false, message: '服务器错误' });
+    }
+    
+    if (!row) {
+      return res.json({ success: false, message: 'ID不存在或已注销' });
+    }
+    
+    // 验证密码（实际项目建议加密，此处简化）
+    if (row.password !== password) {
+      return res.json({ success: false, message: '密码错误' });
+    }
+    
+    res.json({ 
+      success: true, 
+      user: {
+        id: row.id,
+        name: row.name,
+        ip: row.ip
+      }
+    });
+  });
+});
+
+// 4. 注销账号（释放ID）
+app.post('/api/delete-account', (req, res) => {
+  const { userId, password } = req.body;
+  
+  if (!userId || !password) {
+    return res.json({ success: false, message: 'ID和密码不能为空' });
+  }
+  
+  // 验证用户
+  db.get('SELECT id FROM users WHERE id = ? AND password = ? AND status = 1', 
+    [userId, password], (err, row) => {
+      if (err) {
+        console.error('注销账号失败:', err);
+        return res.json({ success: false, message: '服务器错误' });
+      }
+      
+      if (!row) {
+        return res.json({ success: false, message: 'ID或密码错误' });
+      }
+      
+      // 标记账号为注销（软删除，释放ID）
+      db.run('UPDATE users SET status = 0 WHERE id = ?', [userId], (err) => {
+        if (err) {
+          console.error('注销账号失败:', err);
+          return res.json({ success: false, message: '注销失败' });
+        }
+        
+        // 删除该用户的好友关系
+        db.run('DELETE FROM friends WHERE user_id = ? OR friend_id = ?', [userId, userId]);
+        
+        // 通知在线用户
+        broadcastToAll({
+          type: 'userDeleted',
+          userId: userId
+        });
+        
+        res.json({ success: true, message: '账号已注销，ID已释放' });
+      });
+    });
+});
+
+// 5. 修改昵称
+app.post('/api/update-name', (req, res) => {
+  const { userId, newName } = req.body;
+  
+  if (!userId || !newName) {
+    return res.json({ success: false, message: '参数不能为空' });
+  }
+  
+  if (newName.length > 20) {
+    return res.json({ success: false, message: '昵称长度不能超过20位' });
+  }
+  
+  db.run('UPDATE users SET name = ? WHERE id = ? AND status = 1', 
+    [newName, userId], (err) => {
+      if (err) {
+        console.error('修改昵称失败:', err);
+        return res.json({ success: false, message: '修改失败' });
+      }
+      
+      res.json({ success: true, message: '昵称修改成功', newName });
+    });
+});
+
+// 6. 获取聊天室列表
+app.get('/api/chatrooms', (req, res) => {
+  res.json({
+    success: true,
+    rooms: chatRooms
+  });
+});
+
+// 7. 新增聊天室
 app.post('/api/chatrooms', (req, res) => {
   const { name, desc, adminPwd } = req.body;
-
+  
   // 验证管理员密码
   if (adminPwd !== ADMIN_PASSWORD) {
     return res.json({ success: false, message: '管理员密码错误' });
   }
-
+  
   if (!name) {
     return res.json({ success: false, message: '聊天室名称不能为空' });
   }
-
+  
   // 生成唯一ID
   const roomId = 'room_' + Date.now();
-
+  
   // 保存到数据库
-  db.run(`INSERT INTO chatrooms (id, name, desc) VALUES (?, ?, ?)`,
+  db.run('INSERT INTO chatrooms (id, name, desc) VALUES (?, ?, ?)',
     [roomId, name, desc || ''], (err) => {
       if (err) {
         console.error('创建聊天室失败:', err);
         return res.json({ success: false, message: '创建失败' });
       }
-
+      
       // 添加到内存
       const newRoom = { id: roomId, name, desc: desc || '' };
       chatRooms.push(newRoom);
-
+      
       // 广播聊天室更新
       broadcastToAll({
         type: 'chatRooms',
         rooms: chatRooms
       });
-
+      
       res.json({ success: true, room: newRoom });
     });
 });
 
-// 3. 删除聊天室
+// 8. 删除聊天室
 app.delete('/api/chatrooms/:roomId', (req, res) => {
   const { roomId } = req.params;
   const { adminPwd } = req.body;
-
+  
   // 验证管理员密码
   if (adminPwd !== ADMIN_PASSWORD) {
     return res.json({ success: false, message: '管理员密码错误' });
   }
-
+  
   // 不能删除默认聊天室
   if (roomId === 'default') {
     return res.json({ success: false, message: '不能删除默认聊天室' });
   }
-
+  
   // 从数据库删除
-  db.run(`DELETE FROM chatrooms WHERE id = ?`, [roomId], (err) => {
+  db.run('DELETE FROM chatrooms WHERE id = ?', [roomId], (err) => {
     if (err) {
       console.error('删除聊天室失败:', err);
       return res.json({ success: false, message: '删除失败' });
     }
-
+    
     // 删除该聊天室的消息
-    db.run(`DELETE FROM messages WHERE room_id = ?`, [roomId]);
-
+    db.run('DELETE FROM messages WHERE room_id = ?', [roomId]);
+    
     // 从内存移除
     chatRooms = chatRooms.filter(room => room.id !== roomId);
-
+    
     // 广播更新
     broadcastToAll({
       type: 'chatRooms',
       rooms: chatRooms
     });
-
+    
     res.json({ success: true, message: '聊天室已删除' });
   });
 });
 
-// 4. 获取聊天室消息
+// 9. 获取聊天室消息
 app.get('/api/chatrooms/:roomId/messages', (req, res) => {
   const { roomId } = req.params;
-
-  db.all(`SELECT * FROM messages WHERE room_id = ? ORDER BY timestamp ASC`, [roomId], (err, rows) => {
+  
+  db.all('SELECT * FROM messages WHERE room_id = ? ORDER BY timestamp ASC', [roomId], (err, rows) => {
     if (err) {
       console.error('获取消息失败:', err);
-      return res.json({ success: false, message: '获取失败', messages: [] });
+      return res.json({ success: false, message: '获取失败' });
     }
-
+    
     res.json({
       success: true,
       messages: rows
@@ -256,56 +423,78 @@ app.get('/api/chatrooms/:roomId/messages', (req, res) => {
   });
 });
 
-// 5. 发送系统公告
+// 10. 获取好友列表
+app.get('/api/friends/:userId', (req, res) => {
+  const { userId } = req.params;
+  
+  db.all(`
+    SELECT u.id, u.name, u.ip 
+    FROM friends f
+    JOIN users u ON f.friend_id = u.id
+    WHERE f.user_id = ? AND u.status = 1
+  `, [userId], (err, rows) => {
+    if (err) {
+      console.error('获取好友列表失败:', err);
+      return res.json({ success: false, message: '获取失败' });
+    }
+    
+    res.json({
+      success: true,
+      friends: rows
+    });
+  });
+});
+
+// 11. 发送系统公告
 app.post('/api/admin/notice', (req, res) => {
   const { content, adminPwd } = req.body;
-
+  
   if (adminPwd !== ADMIN_PASSWORD) {
     return res.json({ success: false, message: '管理员密码错误' });
   }
-
+  
   if (!content) {
     return res.json({ success: false, message: '公告内容不能为空' });
   }
-
+  
   // 保存到数据库
-  db.run(`INSERT INTO notices (content) VALUES (?)`, [content], (err) => {
+  db.run('INSERT INTO notices (content) VALUES (?)', [content], (err) => {
     if (err) {
       console.error('保存公告失败:', err);
       return res.json({ success: false, message: '发送失败' });
     }
-
+    
     // 广播公告
     broadcastToAll({
       type: 'notice',
       content: content,
       timestamp: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })
     });
-
+    
     res.json({ success: true, message: '公告发送成功' });
   });
 });
 
-// 6. 发送红色管理员消息
+// 12. 发送红色管理员消息
 app.post('/api/admin/red-message', (req, res) => {
   const { content, roomId, adminPwd } = req.body;
-
+  
   if (adminPwd !== ADMIN_PASSWORD) {
     return res.json({ success: false, message: '管理员密码错误' });
   }
-
+  
   if (!content) {
     return res.json({ success: false, message: '消息内容不能为空' });
   }
-
+  
   const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
-
+  
   // 保存到数据库（如果指定了聊天室）
   if (roomId) {
-    db.run(`INSERT INTO messages (room_id, username, content, is_admin, is_red, timestamp) VALUES (?, ?, ?, 1, 1, ?)`,
+    db.run('INSERT INTO messages (room_id, username, content, is_admin, is_red, timestamp) VALUES (?, ?, ?, 1, 1, ?)',
       [roomId, '管理员', content, timestamp]);
   }
-
+  
   // 广播红色消息
   broadcastToAll({
     type: 'adminRedMessage',
@@ -313,234 +502,39 @@ app.post('/api/admin/red-message', (req, res) => {
     roomId: roomId || '',
     timestamp: timestamp
   });
-
+  
   res.json({ success: true, message: '红色消息发送成功' });
 });
 
-// 7. 用户注册（新增ID唯一性校验）
-app.post('/api/register', (req, res) => {
-  const { userId, userPwd } = req.body;
-  const clientIP = getClientIP(req);
-
-  // 基础验证
-  if (!userId || userId.length < 4) {
-    return res.json({ success: false, message: 'ID长度不能少于4位' });
-  }
-  if (!userPwd || userPwd.length < 6) {
-    return res.json({ success: false, message: '密码长度不能少于6位' });
-  }
-
-  // 校验ID唯一性
-  checkUserIdUnique(userId, (err, isUnique) => {
-    if (err) {
-      return res.json({ success: false, message: '校验ID失败，请重试' });
-    }
-    if (!isUnique) {
-      return res.json({ success: false, message: '该ID已被占用，请更换ID' });
-    }
-
-    // 保存用户信息
-    const userName = '用户' + Math.floor(Math.random() * 1000);
-    db.run(`INSERT INTO users (id, pwd, name, ip) VALUES (?, ?, ?, ?)`,
-      [userId, userPwd, userName, clientIP], (err) => {
-        if (err) {
-          console.error('注册用户失败:', err);
-          return res.json({ success: false, message: '注册失败，请重试' });
-        }
-
-        res.json({
-          success: true,
-          message: '注册成功',
-          user: { id: userId, name: userName, ip: clientIP }
-        });
-      });
-  });
-});
-
-// 8. 用户登录
-app.post('/api/login', (req, res) => {
-  const { userId, userPwd } = req.body;
-
-  db.get(`SELECT * FROM users WHERE id = ? AND status = ?`, [userId, 'active'], (err, user) => {
-    if (err) {
-      return res.json({ success: false, message: '登录失败，请重试' });
-    }
-    if (!user) {
-      return res.json({ success: false, message: 'ID不存在或已注销' });
-    }
-    if (user.pwd !== userPwd) {
-      return res.json({ success: false, message: '密码错误' });
-    }
-
-    res.json({
-      success: true,
-      message: '登录成功',
-      user: { id: user.id, name: user.name, ip: user.ip }
-    });
-  });
-});
-
-// 9. 注销账号（释放ID）
-app.post('/api/delete-account', (req, res) => {
-  const { userId, userPwd } = req.body;
-
-  db.get(`SELECT * FROM users WHERE id = ? AND status = ?`, [userId, 'active'], (err, user) => {
-    if (err) {
-      return res.json({ success: false, message: '注销失败，请重试' });
-    }
-    if (!user) {
-      return res.json({ success: false, message: 'ID不存在或已注销' });
-    }
-    if (user.pwd !== userPwd) {
-      return res.json({ success: false, message: '密码错误' });
-    }
-
-    // 标记账号为注销（释放ID）
-    db.run(`UPDATE users SET status = ? WHERE id = ?`, ['inactive', userId], (err) => {
-      if (err) {
-        return res.json({ success: false, message: '注销失败，请重试' });
-      }
-
-      // 删除该用户的好友关系
-      db.run(`DELETE FROM friends WHERE user_id = ? OR friend_id = ?`, [userId, userId]);
-      // 删除该用户的好友申请
-      db.run(`DELETE FROM friend_applies WHERE from_id = ? OR to_id = ?`, [userId, userId]);
-
-      res.json({ success: true, message: '账号已成功注销，ID已释放' });
-    });
-  });
-});
-
-// 10. 修改昵称
-app.post('/api/edit-name', (req, res) => {
-  const { userId, newName } = req.body;
-
-  if (!newName || newName.length > 20) {
-    return res.json({ success: false, message: '昵称不能为空且长度不超过20位' });
-  }
-
-  db.run(`UPDATE users SET name = ? WHERE id = ? AND status = ?`, [newName, userId, 'active'], (err) => {
-    if (err) {
-      return res.json({ success: false, message: '修改失败，请重试' });
-    }
-
-    res.json({ success: true, message: '昵称修改成功', name: newName });
-  });
-});
-
-// 11. 添加好友
-app.post('/api/add-friend', (req, res) => {
-  const { fromId, toId } = req.body;
-
-  // 检查双方是否为有效用户
-  db.get(`SELECT id FROM users WHERE id = ? AND status = ?`, [toId, 'active'], (err, toUser) => {
-    if (err || !toUser) {
-      return res.json({ success: false, message: '好友ID不存在或已注销' });
-    }
-
-    // 检查是否已添加
-    db.get(`SELECT id FROM friends WHERE (user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)`,
-      [fromId, toId, toId, fromId], (err, friend) => {
-        if (err) {
-          return res.json({ success: false, message: '检查好友关系失败' });
-        }
-        if (friend) {
-          return res.json({ success: false, message: '已添加该用户为好友' });
-        }
-
-        // 保存好友申请
-        db.get(`SELECT name FROM users WHERE id = ?`, [fromId], (err, fromUser) => {
-          if (err || !fromUser) {
-            return res.json({ success: false, message: '获取用户信息失败' });
-          }
-
-          db.run(`INSERT INTO friend_applies (from_id, from_name, to_id) VALUES (?, ?, ?)`,
-            [fromId, fromUser.name, toId], (err) => {
-              if (err) {
-                return res.json({ success: false, message: '发送申请失败' });
-              }
-
-              // 广播好友申请
-              broadcastToAll({
-                type: 'friendApply',
-                data: { fromId, fromName: fromUser.name, toId, time: Date.now() }
-              });
-
-              res.json({ success: true, message: '好友申请已发送' });
-            });
-        });
-      });
-  });
-});
-
-// 12. 同意好友申请
-app.post('/api/agree-friend', (req, res) => {
-  const { fromId, toId } = req.body;
-
-  // 保存好友关系（双向）
-  db.run(`INSERT OR IGNORE INTO friends (user_id, friend_id) VALUES (?, ?)`, [toId, fromId]);
-  db.run(`INSERT OR IGNORE INTO friends (user_id, friend_id) VALUES (?, ?)`, [fromId, toId]);
-
-  // 更新申请状态
-  db.run(`UPDATE friend_applies SET status = ? WHERE from_id = ? AND to_id = ?`,
-    ['accepted', fromId, toId]);
-
-  // 获取用户信息
-  db.get(`SELECT name FROM users WHERE id = ?`, [toId], (err, toUser) => {
-    if (err || !toUser) {
-      return res.json({ success: false, message: '获取用户信息失败' });
-    }
-
-    // 广播同意消息
-    broadcastToAll({
-      type: 'friendAgree',
-      data: {
-        friend: { id: toId, name: toUser.name },
-        fromId,
-        toId
-      }
-    });
-
-    res.json({ success: true, message: '已同意好友申请' });
-  });
-});
-
-// 13. 获取好友列表
-app.get('/api/friends/:userId', (req, res) => {
-  const { userId } = req.params;
-
-  db.all(`SELECT u.id, u.name FROM friends f 
-          JOIN users u ON f.friend_id = u.id 
-          WHERE f.user_id = ? AND u.status = ?`,
-    [userId, 'active'], (err, friends) => {
-      if (err) {
-        return res.json({ success: false, message: '获取好友失败', friends: [] });
-      }
-
-      res.json({ success: true, friends });
-    });
-});
-
-// 14. 健康检查
+// 13. 健康检查
 app.get('/health', (req, res) => {
   res.json({
     status: 'alive',
-    timestamp: new Date().toISOString(),
-    database: db.open ? 'connected' : 'disconnected',
-    port: PORT
+    onlineUsers: onlineUsers.length,
+    chatRooms: chatRooms.length,
+    time: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })
   });
 });
 
 // ===================== WebSocket服务 =====================
+
+// 创建HTTP服务器
 const server = http.createServer(app);
+
+// 创建WebSocket服务器
 const wss = new WebSocket.Server({ server });
 
 // WebSocket连接处理
 wss.on('connection', (ws, req) => {
   console.log('新的WebSocket连接');
+  
+  // 获取客户端IP
   const clientIP = getClientIP(req);
-
-  // 消息处理
+  
+  // 用户信息
+  let userInfo = null;
+  
+  // 接收消息
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
@@ -548,64 +542,144 @@ wss.on('connection', (ws, req) => {
       switch (msg.type) {
         case 'online':
           // 用户上线
-          onlineUsers.push({ id: msg.userId, name: msg.userName, ip: clientIP, ws });
+          userInfo = {
+            id: msg.userId,
+            name: msg.userName,
+            ip: clientIP,
+            ws: ws
+          };
+          onlineUsers.push(userInfo);
           console.log(`用户${msg.userName}(${msg.userId})上线`);
           break;
           
         case 'chat':
           // 公聊消息
-          db.run(`INSERT INTO messages (room_id, username, content, is_admin, timestamp) VALUES (?, ?, ?, ?, ?)`,
+          const chatMsg = {
+            type: 'chat',
+            data: {
+              roomId: msg.roomId,
+              username: msg.username,
+              content: msg.content,
+              timestamp: msg.timestamp,
+              isAdmin: msg.isAdmin
+            }
+          };
+          
+          // 保存到数据库
+          db.run('INSERT INTO messages (room_id, username, content, is_admin, timestamp) VALUES (?, ?, ?, ?, ?)',
             [msg.roomId, msg.username, msg.content, msg.isAdmin ? 1 : 0, msg.timestamp]);
-          // 广播消息（仅发送，不重复存储）
-          broadcastToAll({ type: 'chat', data: msg });
+          
+          // 广播给所有用户
+          broadcastToAll(chatMsg);
           break;
           
         case 'privateChat':
-          // 私聊消息
-          broadcastToAll({ type: 'privateChat', data: msg });
+          // 好友私聊
+          const privateMsg = {
+            type: 'privateChat',
+            data: {
+              from: msg.from,
+              to: msg.to,
+              content: msg.content,
+              timestamp: msg.timestamp
+            }
+          };
+          
+          // 保存到数据库
+          db.run('INSERT INTO private_messages (from_id, from_name, to_id, content, timestamp) VALUES (?, ?, ?, ?, ?)',
+            [msg.from.id, msg.from.name, msg.to.id, msg.content, msg.timestamp]);
+          
+          // 发送给接收方
+          const targetUser = onlineUsers.find(u => u.id === msg.to.id);
+          if (targetUser && targetUser.ws.readyState === WebSocket.OPEN) {
+            targetUser.ws.send(JSON.stringify(privateMsg));
+          }
+          
+          // 发送给发送方（确认）
+          ws.send(JSON.stringify(privateMsg));
           break;
           
         case 'friendApply':
           // 好友申请
-          ws.send(JSON.stringify({
+          const applyMsg = {
             type: 'friendApply',
-            data: msg
-          }));
+            data: {
+              fromId: msg.fromId,
+              fromName: msg.fromName,
+              fromIp: msg.fromIp,
+              toId: msg.toId,
+              time: new Date().getTime()
+            }
+          };
+          
+          // 保存到数据库
+          db.run('INSERT INTO friend_applies (from_id, from_name, to_id) VALUES (?, ?, ?)',
+            [msg.fromId, msg.fromName, msg.toId]);
+          
+          // 发送给被申请人
+          const toUser = onlineUsers.find(u => u.id === msg.toId);
+          if (toUser && toUser.ws.readyState === WebSocket.OPEN) {
+            toUser.ws.send(JSON.stringify(applyMsg));
+          }
           break;
           
         case 'friendAgree':
-          // 同意好友
-          ws.send(JSON.stringify({
+          // 同意好友申请
+          const agreeMsg = {
             type: 'friendAgree',
-            data: msg
-          }));
+            data: {
+              friend: {
+                id: msg.fromId,
+                name: msg.fromName
+              }
+            }
+          };
+          
+          // 更新数据库状态
+          db.run('UPDATE friend_applies SET status = 1 WHERE from_id = ? AND to_id = ?',
+            [msg.toId, msg.fromId]);
+          
+          // 保存好友关系（双向）
+          db.run('INSERT OR IGNORE INTO friends (user_id, friend_id) VALUES (?, ?)',
+            [msg.fromId, msg.toId]);
+          db.run('INSERT OR IGNORE INTO friends (user_id, friend_id) VALUES (?, ?)',
+            [msg.toId, msg.fromId]);
+          
+          // 发送给申请人
+          const applyUser = onlineUsers.find(u => u.id === msg.toId);
+          if (applyUser && applyUser.ws.readyState === WebSocket.OPEN) {
+            applyUser.ws.send(JSON.stringify(agreeMsg));
+          }
           break;
       }
     } catch (err) {
       console.error('处理WebSocket消息失败:', err);
     }
   });
-
+  
   // 连接关闭
   ws.on('close', () => {
-    onlineUsers = onlineUsers.filter(user => user.ws !== ws);
     console.log('WebSocket连接关闭');
+    if (userInfo) {
+      onlineUsers = onlineUsers.filter(u => u.id !== userInfo.id);
+    }
   });
-
+  
   // 错误处理
   ws.onerror = (err) => {
     console.error('WebSocket错误:', err);
   };
 });
 
-// ===================== 静态文件托管 =====================
+// ===================== 启动服务器 =====================
+
+// 静态文件托管（前端页面）
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ===================== 启动服务器 =====================
+// 启动HTTP服务器
 server.listen(PORT, () => {
   console.log(`服务器运行在端口 ${PORT}`);
   console.log(`WebSocket地址: ws://localhost:${PORT}`);
-  console.log(`数据库路径: ${dbPath}`);
 });
 
 // 全局错误捕获
@@ -615,4 +689,15 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('未处理的Promise拒绝:', promise, '原因:', reason);
+});
+
+// 优雅关闭
+process.on('SIGINT', () => {
+  console.log('服务器正在关闭...');
+  db.close((err) => {
+    if (err) console.error('关闭数据库失败:', err);
+    server.close(() => {
+      process.exit(0);
+    });
+  });
 });

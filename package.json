@@ -1,11 +1,9 @@
 {
-  "name": "lmx-chat-server",
+  "name": "chat-server",
   "version": "1.0.0",
-  "description": "LMX 聊天系统后端服务器",
-  "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "dev": "nodemon app.js"
+    "install": "npm rebuild sqlite3"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -13,15 +11,7 @@
     "sqlite3": "^5.1.6",
     "cors": "^2.8.5"
   },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
-  },
-  "keywords": [
-    "chat",
-    "websocket",
-    "sqlite",
-    "express"
-  ],
-  "author": "LMX",
-  "license": "MIT"
+  "engines": {
+    "node": ">=18.x"
+  }
 }

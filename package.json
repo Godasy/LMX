@@ -8,6 +8,7 @@
     "express-session": "^1.17.3",
     "sqlite3": "^5.1.6",
     "moment": "^2.29.4",
+    "moment-timezone": "^0.5.45",
     "ws": "^8.14.2",
     "uuid": "^9.0.1"
   },

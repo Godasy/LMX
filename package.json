@@ -1,11 +1,8 @@
 {
   "name": "chat-backend",
   "version": "1.0.0",
-  "dependencies": {
-    "express": "^4.18.2",
-    "sqlite3": "^5.1.6",
-    "ws": "^8.14.2", 
-    "jsonwebtoken": "^9.0.2", 
-    "bcryptjs": "^2.4.3"
+  "imports": {
+    "oak": "https://deno.land/x/oak@v12.6.1/mod.ts",
+    "sqlite": "https://deno.land/x/sqlite@v3.8/mod.ts"
   }
 }

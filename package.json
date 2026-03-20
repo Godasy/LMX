@@ -1,18 +1,10 @@
 {
   "name": "chat-backend",
   "version": "1.0.0",
-  "main": "app.js",
-  "dependencies": {
-    "express": "^4.18.2",
-    "sqlite3": "^5.1.6",
-    "cors": "^2.8.5",
-    "body-parser": "^1.20.2",
-    "bcryptjs": "^2.4.3"
+  "imports": {
+    "std/http": "https://deno.land/std@0.210.0/http/server.ts"
   },
-  "scripts": {
-    "start": "node app.js"
-  },
-  "engines": {
-    "node": ">=14.0.0" 
+  "tasks": {
+    "start": "deno run --allow-net --allow-env --unstable-kv app.js"
   }
 }

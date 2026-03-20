@@ -1,93 +1,69 @@
-const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
-const sqlite3 = require('sqlite3').verbose();
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
+import { DB } from "https://deno.land/x/sqlite@v3.8/mod.ts";
 
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const app = new Application();
+const router = new Router();
+const db = new DB("chat.db");
 
-// 1. 初始化 SQLite 数据库
-const db = new sqlite3.Database('./chat.db');
-db.serialize(() => {
-  // 用户表
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    nickname TEXT,
-    password TEXT,
-    is_online INTEGER DEFAULT 0
-  )`);
-  // 聊天室表
-  db.run(`CREATE TABLE IF NOT EXISTS rooms (
+// 初始化用户表（首次运行执行）
+db.execute(`
+  CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE,
-    creator_id TEXT
-  )`);
-  // 消息表（聊天室/私聊）
-  db.run(`CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id INTEGER,
-    from_user TEXT,
-    to_user TEXT,
-    content TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    is_private INTEGER DEFAULT 0
-  )`);
-  // 好友表
-  db.run(`CREATE TABLE IF NOT EXISTS friends (
-    user_id TEXT,
-    friend_id TEXT,
-    status INTEGER DEFAULT 0,  // 0: 申请中, 1: 已同意
-    PRIMARY KEY (user_id, friend_id)
-  )`);
-  // 公告表
-  db.run(`CREATE TABLE IF NOT EXISTS announcements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    content TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-  // 插入默认聊天室
-  db.run(`INSERT OR IGNORE INTO rooms (name) VALUES ('默认聊天室')`);
-});
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
-// 2. 中间件
-app.use(express.json());
-app.use((req, res, next) => {
-  // 简单的 JWT 验证逻辑（需完善）
-  const token = req.headers['authorization'];
-  if (token) {
-    jwt.verify(token, 'your-secret-key', (err, decoded) => {
-      if (!err) req.user = decoded;
-    });
+// 跨域中间件
+app.use(async (ctx, next) => {
+  ctx.response.headers.set("Access-Control-Allow-Origin", "https://lmx.is-best.net");
+  ctx.response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  ctx.response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  if (ctx.request.method === "OPTIONS") {
+    ctx.response.status = 200;
+    return;
   }
-  next();
+  await next();
 });
 
-// 3. API 路由示例（需完善注册、登录、好友、管理员等接口）
-app.post('/register', (req, res) => {
-  const { id, nickname, password } = req.body;
-  const hashedPassword = bcrypt.hashSync(password, 8);
-  db.run(`INSERT INTO users (id, nickname, password) VALUES (?, ?, ?)`,
-    [id, nickname, hashedPassword], (err) => {
-      if (err) return res.status(400).json({ error: 'ID已存在' });
-      res.json({ message: '注册成功' });
-    });
+// 登录接口
+router.post("/api/login", async (ctx) => {
+  const body = await ctx.request.body().value;
+  const { username, password } = body;
+
+  const user = db.query("SELECT * FROM users WHERE username = ? AND password = ?", [
+    username,
+    password,
+  ]);
+
+  if (user.length) {
+    ctx.response.body = { success: true, message: "登录成功" };
+  } else {
+    ctx.response.status = 401;
+    ctx.response.body = { success: false, message: "用户名或密码错误" };
+  }
 });
 
-// 4. WebSocket 实时通信（需完善消息转发、在线状态同步等）
-wss.on('connection', (ws, req) => {
-  // 验证用户身份后处理消息
-  ws.on('message', (data) => {
-    const message = JSON.parse(data);
-    // 广播消息到对应聊天室/私聊用户
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify(message));
-      }
-    });
-  });
+// 创建账号接口
+router.post("/api/register", async (ctx) => {
+  const body = await ctx.request.body().value;
+  const { username, password } = body;
+
+  try {
+    db.query("INSERT INTO users (username, password) VALUES (?, ?)", [
+      username,
+      password,
+    ]);
+    ctx.response.body = { success: true, message: "注册成功" };
+  } catch (e) {
+    ctx.response.status = 400;
+    ctx.response.body = { success: false, message: "用户名已存在" };
+  }
 });
 
-server.listen(3000, () => console.log('Server running on port 3000'));
+app.use(router.routes());
+app.use(router.allowedMethods());
+
+console.log("Server running on http://localhost:8000");
+await app.listen({ port: 8000 });
